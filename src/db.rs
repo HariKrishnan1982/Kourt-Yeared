@@ -1,0 +1,91 @@
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
+    SqlitePool,
+};
+use std::{str::FromStr, time::Duration};
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS users(
+  id INTEGER PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  pw_hash TEXT NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sessions(
+  token_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  expires_ms INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cases(
+  id TEXT PRIMARY KEY,
+  plaintiff_id INTEGER NOT NULL REFERENCES users(id),
+  defendant_id INTEGER REFERENCES users(id),
+  defendant_label TEXT NOT NULL,
+  title TEXT NOT NULL,
+  charge TEXT NOT NULL,
+  details TEXT NOT NULL,
+  tier TEXT NOT NULL,
+  demand TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  deadline_ms INTEGER NOT NULL,
+  summons_ms INTEGER NOT NULL,
+  args_ms INTEGER NOT NULL,
+  vote_ms INTEGER NOT NULL,
+  outcome TEXT,
+  debtor_id INTEGER,
+  creditor_id INTEGER,
+  sentence TEXT,
+  sentence_paid INTEGER NOT NULL DEFAULT 0,
+  guilty INTEGER NOT NULL DEFAULT 0,
+  not_guilty INTEGER NOT NULL DEFAULT 0,
+  created_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cases_open ON cases(phase, deadline_ms);
+CREATE TABLE IF NOT EXISTS participants(
+  case_id TEXT NOT NULL REFERENCES cases(id),
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  role TEXT NOT NULL,
+  joined_ms INTEGER NOT NULL,
+  PRIMARY KEY(case_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS participants_user ON participants(user_id);
+CREATE TABLE IF NOT EXISTS invites(
+  token TEXT PRIMARY KEY,
+  case_id TEXT NOT NULL REFERENCES cases(id),
+  role TEXT NOT NULL,
+  claimed_by INTEGER
+);
+CREATE TABLE IF NOT EXISTS messages(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id TEXT NOT NULL REFERENCES cases(id),
+  user_id INTEGER NOT NULL,
+  side TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS messages_case ON messages(case_id, id);
+CREATE TABLE IF NOT EXISTS votes(
+  case_id TEXT NOT NULL REFERENCES cases(id),
+  user_id INTEGER NOT NULL,
+  vote TEXT NOT NULL,
+  PRIMARY KEY(case_id, user_id)
+);
+";
+
+/// One connection on purpose: SQLite serialises writers anyway, and a single
+/// connection makes every transaction in this app strictly ordered. Never call
+/// `&pool` helpers while a transaction is open or the app will wait on itself.
+pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let opts = SqliteConnectOptions::from_str(url)?
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true)
+        .busy_timeout(Duration::from_secs(5));
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await?;
+    sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+    Ok(pool)
+}
