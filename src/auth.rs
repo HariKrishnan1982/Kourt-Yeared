@@ -28,7 +28,7 @@ pub struct AuthUser {
     pub username: String,
 }
 
-fn hash_token(t: &str) -> String {
+pub fn hash_token(t: &str) -> String {
     Sha256::digest(t.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -54,7 +54,7 @@ impl FromRequestParts<AppState> for AuthUser {
         let tok = session_token(&parts.headers).ok_or_else(ApiError::unauthorized)?;
         let row: Option<(i64, String)> = sqlx::query_as(
             "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id \
-             WHERE s.token_hash = ? AND s.expires_ms > ?",
+             WHERE s.token_hash = ? AND s.expires_ms > ? AND u.banned = 0",
         )
         .bind(hash_token(&tok))
         .bind(now_ms())
@@ -71,12 +71,13 @@ pub struct Creds {
     password: String,
 }
 
-fn valid_username(u: &str) -> bool {
-    (3..=20).contains(&u.chars().count())
+pub fn valid_username(u: &str) -> bool {
+    !u.to_lowercase().starts_with("deleted-")
+        && (3..=20).contains(&u.chars().count())
         && u.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
 }
 
-async fn hash_password(pw: String) -> ApiResult<String> {
+pub async fn hash_password(pw: String) -> ApiResult<String> {
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default().hash_password(pw.as_bytes(), &salt).map(|h| h.to_string())
@@ -87,7 +88,7 @@ async fn hash_password(pw: String) -> ApiResult<String> {
     .ok_or_else(|| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "Couldn't secure your password. Try again."))
 }
 
-async fn verify_password(pw: String, stored: Option<String>) -> bool {
+pub async fn verify_password(pw: String, stored: Option<String>) -> bool {
     static DUMMY: OnceLock<String> = OnceLock::new();
     tokio::task::spawn_blocking(move || {
         // Always do one hash verification, so unknown usernames cost the same time.
@@ -119,6 +120,11 @@ async fn start_session(st: &AppState, user_id: i64) -> ApiResult<String> {
         .bind(now_ms() + SESSION_MS)
         .execute(&st.db)
         .await?;
+    sqlx::query("UPDATE users SET last_login_ms = ? WHERE id = ?")
+        .bind(now_ms())
+        .bind(user_id)
+        .execute(&st.db)
+        .await?;
     sqlx::query("DELETE FROM sessions WHERE expires_ms < ?")
         .bind(now_ms())
         .execute(&st.db)
@@ -127,6 +133,9 @@ async fn start_session(st: &AppState, user_id: i64) -> ApiResult<String> {
 }
 
 pub async fn signup(State(st): State<AppState>, Json(c): Json<Creds>) -> ApiResult<impl IntoResponse> {
+    if !crate::admin::signups_open(&st.db).await {
+        return Err(ApiError::forbidden("New accounts are paused right now. Ask whoever runs this court."));
+    }
     let username = c.username.trim().to_string();
     if !valid_username(&username) {
         return Err(ApiError::bad("Usernames are 3 to 20 characters: letters, numbers, dots and underscores."));
@@ -160,17 +169,21 @@ pub async fn login(State(st): State<AppState>, Json(c): Json<Creds>) -> ApiResul
     if !st.limiter.hit(&format!("login:{}", username.to_lowercase()), 12, 10 * 60 * 1000) {
         return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "Too many attempts. Wait a few minutes and try again."));
     }
-    let row: Option<(i64, String, String)> =
-        sqlx::query_as("SELECT id, username, pw_hash FROM users WHERE username = ?")
+    let row: Option<(i64, String, String, i64, String)> =
+        sqlx::query_as("SELECT id, username, pw_hash, banned, ban_reason FROM users WHERE username = ?")
             .bind(&username)
             .fetch_optional(&st.db)
             .await?;
-    let (id, name, stored) = match row {
-        Some((id, n, h)) => (Some(id), n, Some(h)),
-        None => (None, username.clone(), None),
+    let (id, name, stored, banned, reason) = match row {
+        Some((id, n, h, b, r)) => (Some(id), n, Some(h), b, r),
+        None => (None, username.clone(), None, 0, String::new()),
     };
     if !verify_password(c.password, stored).await {
         return Err(ApiError::new(StatusCode::UNAUTHORIZED, "Wrong username or password."));
+    }
+    if banned == 1 {
+        let why = if reason.is_empty() { String::new() } else { format!(" Reason: {reason}") };
+        return Err(ApiError::forbidden(format!("This account has been suspended.{why}")));
     }
     let id = id.ok_or_else(ApiError::unauthorized)?;
     let set = start_session(&st, id).await?;

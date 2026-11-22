@@ -73,6 +73,62 @@ CREATE TABLE IF NOT EXISTS votes(
 );
 ";
 
+/// Each entry upgrades the database by one version (entry 0 takes v1 to v2).
+/// v1 is the original schema above. Never edit an old entry; add a new one.
+const MIGRATIONS: &[&str] = &[
+    "ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0;
+     ALTER TABLE users ADD COLUMN ban_reason TEXT NOT NULL DEFAULT '';
+     ALTER TABLE users ADD COLUMN admin_note TEXT NOT NULL DEFAULT '';
+     ALTER TABLE users ADD COLUMN last_login_ms INTEGER;
+     ALTER TABLE messages ADD COLUMN removed INTEGER NOT NULL DEFAULT 0;
+     CREATE TABLE IF NOT EXISTS admins(
+       id INTEGER PRIMARY KEY,
+       username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+       pw_hash TEXT NOT NULL,
+       created_ms INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS admin_sessions(
+       token_hash TEXT PRIMARY KEY,
+       admin_id INTEGER NOT NULL REFERENCES admins(id),
+       expires_ms INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS admin_log(
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       at_ms INTEGER NOT NULL,
+       admin TEXT NOT NULL,
+       action TEXT NOT NULL,
+       target TEXT NOT NULL,
+       detail TEXT NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS settings(
+       key TEXT PRIMARY KEY,
+       value TEXT NOT NULL
+     );",
+];
+
+async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let current: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(pool).await?;
+    // A database made before versioning existed already has the v1 schema.
+    let have = current.max(1);
+    let mut version = have;
+    for (i, sql) in MIGRATIONS.iter().enumerate() {
+        let target = i as i64 + 2;
+        if have >= target {
+            continue;
+        }
+        let script = format!("BEGIN;\n{sql}\nPRAGMA user_version = {target};\nCOMMIT;");
+        if let Err(e) = sqlx::raw_sql(&script).execute(pool).await {
+            let _ = sqlx::query("ROLLBACK").execute(pool).await;
+            return Err(e);
+        }
+        version = target;
+    }
+    if version != current && current < 1 {
+        sqlx::raw_sql(&format!("PRAGMA user_version = {version};")).execute(pool).await?;
+    }
+    Ok(())
+}
+
 /// One connection on purpose: SQLite serialises writers anyway, and a single
 /// connection makes every transaction in this app strictly ordered. Never call
 /// `&pool` helpers while a transaction is open or the app will wait on itself.
@@ -87,5 +143,6 @@ pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
         .connect_with(opts)
         .await?;
     sqlx::raw_sql(SCHEMA).execute(&pool).await?;
+    migrate(&pool).await?;
     Ok(pool)
 }

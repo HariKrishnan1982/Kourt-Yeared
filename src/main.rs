@@ -1,3 +1,4 @@
+mod admin;
 mod api;
 mod auth;
 mod db;
@@ -28,7 +29,7 @@ use crate::{
 
 #[derive(RustEmbed)]
 #[folder = "web/"]
-struct Assets;
+pub struct Assets;
 
 /// Every state-changing API call must carry a custom header. Browsers won't add
 /// one on a cross-site request without a CORS preflight, which we never allow.
@@ -89,6 +90,8 @@ pub fn app(state: AppState) -> Router {
         .route("/cases/{id}/withdraw", post(api::withdraw))
         .route("/cases/{id}/ws", get(ws::ws_handler))
         .route("/join/{token}", get(api::peek_join).post(api::join))
+        .route("/site", get(admin::site))
+        .nest("/admin", admin::routes())
         .layer(middleware::from_fn(require_marker));
 
     let csp = "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; \
@@ -96,6 +99,8 @@ pub fn app(state: AppState) -> Router {
                frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
     Router::new()
         .nest("/api", api_routes)
+        .route("/admin", get(admin::page))
+        .route("/admin/{*rest}", get(admin::page))
         .fallback(static_handler)
         .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(SetResponseHeaderLayer::if_not_present(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static(csp)))
@@ -148,9 +153,14 @@ async fn main() {
         hub: Hub::default(),
         limiter: Limiter::default(),
         secure_cookies: std::env::var("KOURT_SECURE_COOKIES").map(|v| v == "1").unwrap_or(false),
+        admin_remote: std::env::var("KOURT_ADMIN_REMOTE").map(|v| v == "1").unwrap_or(false),
+        started_ms: now_ms(),
     };
+    admin::bootstrap(&state.db).await;
     spawn_clock(state.clone());
     let listener = tokio::net::TcpListener::bind(addr).await.expect("could not bind the address");
     println!("Kourt Yeared is in session at http://{addr}");
-    axum::serve(listener, app(state)).await.expect("server error");
+    axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>())
+        .await
+        .expect("server error");
 }

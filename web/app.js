@@ -71,7 +71,12 @@ const caseNo = (id) => "KY-" + id.toUpperCase();
 /* ---------- app state and routing ---------- */
 const app = document.getElementById("app");
 let me = null;
+let site = { announcement: "", signups_open: true };
 let cleanup = () => {};
+
+async function loadSite() {
+  try { site = await api("GET", "/site"); } catch (_) { /* keep the defaults */ }
+}
 
 async function loadMe() {
   try { me = await api("GET", "/me"); } catch (_) { me = null; }
@@ -98,7 +103,8 @@ function shell(...content) {
     : null;
   const top = h("header", { class: "top" },
     h("a", { class: "mark", href: "/", "data-link": "" }, "Kourt Yeared"), who);
-  app.replaceChildren(top, h("main", { id: "main", class: "wrap" }, ...content));
+  const banner = site.announcement ? h("p", { class: "site-banner", role: "status" }, site.announcement) : null;
+  app.replaceChildren(...[banner, top, h("main", { id: "main", class: "wrap" }, ...content)].filter(Boolean));
 }
 
 async function logout() {
@@ -131,7 +137,7 @@ function afterAuth() {
 
 /* ---------- auth form ---------- */
 function authForm(onDone) {
-  let mode = "signup";
+  let mode = site.signups_open ? "signup" : "login";
   const box = h("div");
   const render = () => {
     const err = h("p", { class: "err", role: "alert", hidden: true });
@@ -154,7 +160,11 @@ function authForm(onDone) {
       err,
       h("div", { class: "field" }, go));
     const tab = (m, label) => h("button", { class: "tab", type: "button", role: "tab", "aria-selected": String(mode === m), onclick: () => { mode = m; render(); } }, label);
-    box.replaceChildren(h("div", { class: "tabs", role: "tablist" }, tab("signup", "Create account"), tab("login", "Log in")), form);
+    box.replaceChildren(
+      site.signups_open
+        ? h("div", { class: "tabs", role: "tablist" }, tab("signup", "Create account"), tab("login", "Log in"))
+        : h("p", { class: "notice" }, "New accounts are paused right now. If you already have one, log in."),
+      form);
   };
   render();
   return box;
@@ -382,9 +392,11 @@ function caseView(id) {
           ? h("li", { class: "objection " + m.side },
               h("span", { class: "stamp" }, "Objection"),
               h("span", null, `${m.user}${m.body ? ": " + m.body : ""}`))
-          : h("li", { class: "entry " + m.side },
-              h("p", { class: "by" }, m.user, m.lawyer ? h("span", { class: "tag" }, " (lawyer)") : null),
-              h("p", null, m.body)))
+          : m.removed
+            ? h("li", { class: "entry removed " + m.side }, h("p", { class: "by" }, m.user), h("p", null, "Removed by the court"))
+            : h("li", { class: "entry " + m.side },
+                h("p", { class: "by" }, m.user, m.lawyer ? h("span", { class: "tag" }, " (lawyer)") : null),
+                h("p", null, m.body)))
       : [h("li", { class: "empty" }, s.phase === "summons" ? "Court is not in session yet." : "No statements yet.")]));
     if (nearBottom && s.messages.length) log.lastElementChild.scrollIntoView({ block: "nearest" });
   }
@@ -531,4 +543,4 @@ function caseView(id) {
 }
 
 /* ---------- boot ---------- */
-loadMe().then(route);
+Promise.all([loadMe(), loadSite()]).then(route);

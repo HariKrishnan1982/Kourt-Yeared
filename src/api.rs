@@ -34,11 +34,11 @@ fn checked(s: String, min: usize, max: usize, field: &str) -> ApiResult<String> 
     Ok(s)
 }
 
-fn line(s: &str, min: usize, max: usize, field: &str) -> ApiResult<String> {
+pub fn line(s: &str, min: usize, max: usize, field: &str) -> ApiResult<String> {
     checked(clean(s, false), min, max, field)
 }
 
-fn text(s: &str, min: usize, max: usize, field: &str) -> ApiResult<String> {
+pub fn text(s: &str, min: usize, max: usize, field: &str) -> ApiResult<String> {
     checked(clean(s, true), min, max, field)
 }
 
@@ -77,8 +77,9 @@ pub async fn create_case(State(st): State<AppState>, user: AuthUser, Json(b): Js
         .bind(user.id)
         .fetch_one(&st.db)
         .await?;
-    if open >= 10 {
-        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, "You have 10 open cases. Let some finish first."));
+    let max_open = crate::admin::max_open_cases(&st.db).await;
+    if open >= max_open {
+        return Err(ApiError::new(StatusCode::TOO_MANY_REQUESTS, format!("You have {max_open} open cases. Let some finish first.")));
     }
 
     let d = split_minutes(minutes);
@@ -403,8 +404,8 @@ pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Op
         .fetch_optional(db)
         .await?;
 
-    let msgs: Vec<(i64, String, String, String, String, String, i64)> = sqlx::query_as(
-        "SELECT m.id, m.side, m.kind, u.username, p.role, m.body, m.created_ms FROM messages m \
+    let msgs: Vec<(i64, String, String, String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT m.id, m.side, m.kind, u.username, p.role, m.body, m.created_ms, m.removed FROM messages m \
          JOIN users u ON u.id = m.user_id JOIN participants p ON p.case_id = m.case_id AND p.user_id = m.user_id \
          WHERE m.case_id = ? ORDER BY m.id LIMIT 500",
     )
@@ -413,8 +414,8 @@ pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Op
     .await?;
     let messages: Vec<Value> = msgs
         .into_iter()
-        .map(|(mid, side, kind, user, role, body, at)| {
-            json!({ "id": mid, "side": side, "kind": kind, "user": user, "lawyer": role.ends_with("lawyer"), "body": body, "at": at })
+        .map(|(mid, side, kind, user, role, body, at, removed)| {
+            json!({ "id": mid, "side": side, "kind": kind, "user": user, "lawyer": role.ends_with("lawyer"), "body": body, "at": at, "removed": removed == 1 })
         })
         .collect();
 

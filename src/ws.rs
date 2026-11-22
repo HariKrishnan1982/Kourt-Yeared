@@ -46,7 +46,20 @@ pub async fn ws_handler(
     Ok(ws.on_upgrade(move |socket| run(st, user.id, id, socket)))
 }
 
+async fn allowed(st: &AppState, uid: i64) -> bool {
+    sqlx::query_scalar::<_, i64>("SELECT banned FROM users WHERE id = ?")
+        .bind(uid)
+        .fetch_optional(&st.db)
+        .await
+        .ok()
+        .flatten()
+        == Some(0)
+}
+
 async fn send_snapshot(st: &AppState, id: &str, uid: i64, tx: &mut futures_util::stream::SplitSink<WebSocket, Message>) -> bool {
+    if !allowed(st, uid).await {
+        return false;
+    }
     match snapshot(&st.db, id, uid).await {
         Ok(Some(v)) => tx.send(Message::Text(v.to_string().into())).await.is_ok(),
         Ok(None) => false,
@@ -74,7 +87,7 @@ async fn run(st: AppState, uid: i64, id: String, socket: WebSocket) {
                 Err(RecvError::Closed) => break,
             },
             _ = ping.tick() => {
-                if tx.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
+                if !allowed(&st, uid).await || tx.send(Message::Ping(Vec::new().into())).await.is_err() { break; }
             }
             m = rx.next() => match m {
                 None | Some(Err(_)) | Some(Ok(Message::Close(_))) => break,

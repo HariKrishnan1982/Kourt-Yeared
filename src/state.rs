@@ -46,10 +46,35 @@ impl Limiter {
     }
 }
 
+impl Limiter {
+    /// True when `key` already has `max` recorded failures inside the window.
+    pub fn blocked(&self, key: &str, max: u32, window_ms: i64) -> bool {
+        let now = now_ms();
+        match self.0.lock().unwrap().get(key) {
+            Some((n, start)) if now - *start < window_ms => *n >= max,
+            _ => false,
+        }
+    }
+    pub fn record(&self, key: &str, window_ms: i64) {
+        let now = now_ms();
+        let mut m = self.0.lock().unwrap();
+        let e = m.entry(key.to_string()).or_insert((0, now));
+        if now - e.1 >= window_ms {
+            *e = (0, now);
+        }
+        e.0 += 1;
+    }
+    pub fn clear(&self, key: &str) {
+        self.0.lock().unwrap().remove(key);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: sqlx::SqlitePool,
     pub hub: Hub,
     pub limiter: Limiter,
     pub secure_cookies: bool,
+    pub admin_remote: bool,
+    pub started_ms: i64,
 }

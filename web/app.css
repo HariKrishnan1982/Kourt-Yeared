@@ -218,3 +218,8 @@ textarea { min-height: 7rem; resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   .slam, .shake { animation: none; }
 }
+
+/* Admin-controlled bits */
+.site-banner { margin: 0; padding: 0.6rem max(1rem, env(safe-area-inset-left)); background: #f1e2b3; color: var(--ink); text-align: center; font-weight: 500; border-bottom: 2px solid var(--brass); max-width: none; }
+.notice { background: #f1e2b3; border: 1px solid var(--brass); padding: 0.6rem 0.8rem; margin: 0 0 1rem; max-width: none; }
+.entry.removed p:last-child { font-style: italic; color: var(--ink-soft); }
