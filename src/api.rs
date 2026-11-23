@@ -373,21 +373,12 @@ pub async fn get_case(State(st): State<AppState>, user: AuthUser, Path(id): Path
     snapshot(&st.db, &id, user.id).await?.map(Json).ok_or_else(ApiError::not_found)
 }
 
-async fn username(db: &sqlx::SqlitePool, id: Option<i64>) -> Result<Option<String>, sqlx::Error> {
-    match id {
-        Some(i) => sqlx::query_scalar("SELECT username FROM users WHERE id = ?").bind(i).fetch_optional(db).await,
-        None => Ok(None),
-    }
-}
-
 /// Everything one viewer is allowed to see. Invite links go only to the people
 /// who can hand them out; votes stay hidden until the verdict.
 pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Option<Value>, sqlx::Error> {
     let Some(c) = load_case(db, id).await? else { return Ok(None) };
     let Some(role) = role_of(db, id, viewer).await? else { return Ok(None) };
 
-    let plaintiff = username(db, Some(c.plaintiff_id)).await?.unwrap_or_default();
-    let defendant = username(db, c.defendant_id).await?;
     let people: Vec<(String, String)> = sqlx::query_as(
         "SELECT u.username, p.role FROM participants p JOIN users u ON u.id = p.user_id \
          WHERE p.case_id = ? ORDER BY p.joined_ms",
@@ -395,14 +386,27 @@ pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Op
     .bind(id)
     .fetch_all(db)
     .await?;
+
+    let plaintiff = people
+        .iter()
+        .find(|(_, r)| r == "plaintiff")
+        .map(|(n, _)| n.clone())
+        .unwrap_or_default();
+    let defendant = if c.defendant_id.is_some() {
+        people.iter().find(|(_, r)| r == "defendant").map(|(n, _)| n.clone())
+    } else {
+        None
+    };
+
     let lawyer = |r: &str| people.iter().find(|(_, role)| role == r).map(|(n, _)| n.clone());
     let jury: Vec<&String> = people.iter().filter(|(_, r)| r == "jury").map(|(n, _)| n).collect();
-    let voted: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM votes WHERE case_id = ?").bind(id).fetch_one(db).await?;
-    let my_vote: Option<String> = sqlx::query_scalar("SELECT vote FROM votes WHERE case_id = ? AND user_id = ?")
+
+    let votes_list: Vec<(i64, String)> = sqlx::query_as("SELECT user_id, vote FROM votes WHERE case_id = ?")
         .bind(id)
-        .bind(viewer)
-        .fetch_optional(db)
+        .fetch_all(db)
         .await?;
+    let voted = votes_list.len() as i64;
+    let my_vote = votes_list.into_iter().find(|(uid, _)| *uid == viewer).map(|(_, v)| v);
 
     let msgs: Vec<(i64, String, String, String, String, String, i64, i64)> = sqlx::query_as(
         "SELECT m.id, m.side, m.kind, u.username, p.role, m.body, m.created_ms, m.removed FROM messages m \
@@ -415,6 +419,7 @@ pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Op
     let messages: Vec<Value> = msgs
         .into_iter()
         .map(|(mid, side, kind, user, role, body, at, removed)| {
+            let body = if removed == 1 { "[removed by the court]".to_string() } else { body };
             json!({ "id": mid, "side": side, "kind": kind, "user": user, "lawyer": role.ends_with("lawyer"), "body": body, "at": at, "removed": removed == 1 })
         })
         .collect();
@@ -426,17 +431,14 @@ pub async fn snapshot(db: &sqlx::SqlitePool, id: &str, viewer: i64) -> Result<Op
     };
     let mut invites = serde_json::Map::new();
     if c.phase != "closed" {
-        for r in wanted {
-            let t: Option<(String, Option<i64>)> =
-                sqlx::query_as("SELECT token, claimed_by FROM invites WHERE case_id = ? AND role = ?")
-                    .bind(id)
-                    .bind(*r)
-                    .fetch_optional(db)
-                    .await?;
-            if let Some((token, claimed)) = t {
-                if claimed.is_none() || *r == "jury" {
-                    invites.insert((*r).to_string(), json!(token));
-                }
+        let inv_rows: Vec<(String, String, Option<i64>)> =
+            sqlx::query_as("SELECT role, token, claimed_by FROM invites WHERE case_id = ?")
+                .bind(id)
+                .fetch_all(db)
+                .await?;
+        for (r, token, claimed) in inv_rows {
+            if wanted.contains(&r.as_str()) && (claimed.is_none() || r == "jury") {
+                invites.insert(r, json!(token));
             }
         }
     }

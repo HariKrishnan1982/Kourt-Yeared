@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sessions(
   user_id INTEGER NOT NULL REFERENCES users(id),
   expires_ms INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
 CREATE TABLE IF NOT EXISTS cases(
   id TEXT PRIMARY KEY,
   plaintiff_id INTEGER NOT NULL REFERENCES users(id),
@@ -41,6 +42,8 @@ CREATE TABLE IF NOT EXISTS cases(
   created_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cases_open ON cases(phase, deadline_ms);
+CREATE INDEX IF NOT EXISTS cases_debtor ON cases(debtor_id, sentence_paid);
+CREATE INDEX IF NOT EXISTS cases_creditor ON cases(creditor_id, sentence_paid);
 CREATE TABLE IF NOT EXISTS participants(
   case_id TEXT NOT NULL REFERENCES cases(id),
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -55,6 +58,7 @@ CREATE TABLE IF NOT EXISTS invites(
   role TEXT NOT NULL,
   claimed_by INTEGER
 );
+CREATE INDEX IF NOT EXISTS invites_case ON invites(case_id);
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   case_id TEXT NOT NULL REFERENCES cases(id),
@@ -65,6 +69,7 @@ CREATE TABLE IF NOT EXISTS messages(
   created_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS messages_case ON messages(case_id, id);
+CREATE INDEX IF NOT EXISTS messages_user ON messages(user_id, created_ms);
 CREATE TABLE IF NOT EXISTS votes(
   case_id TEXT NOT NULL REFERENCES cases(id),
   user_id INTEGER NOT NULL,
@@ -104,6 +109,12 @@ const MIGRATIONS: &[&str] = &[
        key TEXT PRIMARY KEY,
        value TEXT NOT NULL
      );",
+    "CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+     CREATE INDEX IF NOT EXISTS admin_sessions_admin ON admin_sessions(admin_id);
+     CREATE INDEX IF NOT EXISTS cases_debtor ON cases(debtor_id, sentence_paid);
+     CREATE INDEX IF NOT EXISTS cases_creditor ON cases(creditor_id, sentence_paid);
+     CREATE INDEX IF NOT EXISTS invites_case ON invites(case_id);
+     CREATE INDEX IF NOT EXISTS messages_user ON messages(user_id, created_ms);",
 ];
 
 async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
@@ -129,11 +140,26 @@ async fn migrate(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+pub fn resolve_db_url(url: &str) -> String {
+    #[cfg(windows)]
+    {
+        for prefix in ["sqlite:///tmp/", "sqlite:/tmp/", "sqlite://tmp/", "sqlite://./tmp/"] {
+            if let Some(rest) = url.strip_prefix(prefix) {
+                let temp = std::env::temp_dir();
+                let db_path = temp.join(rest);
+                return format!("sqlite://{}", db_path.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    url.to_string()
+}
+
 /// One connection on purpose: SQLite serialises writers anyway, and a single
 /// connection makes every transaction in this app strictly ordered. Never call
 /// `&pool` helpers while a transaction is open or the app will wait on itself.
 pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
-    let opts = SqliteConnectOptions::from_str(url)?
+    let resolved = resolve_db_url(url);
+    let opts = SqliteConnectOptions::from_str(&resolved)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
         .foreign_keys(true)
@@ -146,3 +172,19 @@ pub async fn connect(url: &str) -> Result<SqlitePool, sqlx::Error> {
     migrate(&pool).await?;
     Ok(pool)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_db_url() {
+        #[cfg(windows)]
+        {
+            let resolved = resolve_db_url("sqlite:///tmp/e2e.db");
+            assert!(resolved.starts_with("sqlite://") && resolved.ends_with("e2e.db"));
+        }
+        assert_eq!(resolve_db_url("sqlite://kourt.db"), "sqlite://kourt.db");
+    }
+}
+

@@ -66,8 +66,8 @@ function toast(msg, bad) {
 async function copyText(text, btn) {
   try { await navigator.clipboard.writeText(text); }
   catch (_) {
-    const i = h("input", { value: text, "aria-hidden": "true" });
-    document.body.append(i); i.select(); document.execCommand("copy"); i.remove();
+    const i = h("input", { value: text, style: "position:fixed;top:-9999px;opacity:0", "aria-hidden": "true" });
+    document.body.append(i); i.select(); i.setSelectionRange(0, 99999); document.execCommand("copy"); i.remove();
   }
   const old = btn.textContent; btn.textContent = "Copied";
   setTimeout(() => { btn.textContent = old; }, 1600);

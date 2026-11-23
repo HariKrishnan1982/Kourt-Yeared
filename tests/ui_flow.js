@@ -1,6 +1,10 @@
-const {JSDOM}=require('jsdom'); const WS=require('ws'); const fs=require('fs'); const {execSync}=require('child_process');
-const B='http://127.0.0.1:3111'; const code=fs.readFileSync('/home/claude/kourt-yeared/web/app.js','utf8');
-const html=fs.readFileSync('/home/claude/kourt-yeared/web/index.html','utf8').replace(/<link[^>]*>/g,'').replace(/<script[^>]*><\/script>/g,'');
+const {JSDOM}=require('jsdom'); const WS=require('ws'); const fs=require('fs'); const path=require('path'); const os=require('os'); const {execFileSync}=require('child_process');
+const B='http://127.0.0.1:3111';
+const W=path.resolve(__dirname, '../web')+'/';
+const code=fs.readFileSync(W+'app.js','utf8');
+const html=fs.readFileSync(W+'index.html','utf8').replace(/<link[^>]*>/g,'').replace(/<script[^>]*><\/script>/g,'');
+const DB=process.env.KOURT_DB_FILE || (process.platform === 'win32' ? path.join(os.tmpdir(), 'ws.db') : '/tmp/ws.db');
+const pyBin=process.platform === 'win32' ? 'python' : 'python3';
 let fails=0; const ok=(n,c,x)=>{console.log((c?'PASS ':'FAIL ')+n+(c?'':' '+String(x).slice(0,200)));if(!c)fails++};
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,t=4000){const s=Date.now();while(Date.now()-s<t){try{const v=fn();if(v)return v}catch(e){}await wait(50)}return null}
@@ -22,8 +26,7 @@ async function browser(path){
   const close=()=>{w.close()};
   return {w,$,$$,text,fill,click,btn,submit,errors,close,cookie:()=>cookie};
 }
-const {execFileSync}=require('child_process');
-const sql=(q)=>execFileSync('python3',['-c',"import sqlite3,sys;d=sqlite3.connect('/tmp/ws.db');d.execute(sys.argv[1]);d.commit()",q]);
+const sql=(q)=>execFileSync(pyBin,['-c',`import sqlite3,sys;d=sqlite3.connect(sys.argv[2]);d.execute(sys.argv[1]);d.commit()`,q,DB]);
 (async()=>{
   const tag=Date.now()%1000000;
   // landing + signup

@@ -2,8 +2,9 @@
    KOURT_ADDR=127.0.0.1:3114 KOURT_DB=sqlite:///tmp/adm.db KOURT_ADMIN_USER=clerk \
    KOURT_ADMIN_PASSWORD=clerk-test-pass-123 cargo run
 """
-import json, sqlite3, sys, time, urllib.request, urllib.error, http.cookiejar
-BASE = "http://127.0.0.1:3114"; DB = "/tmp/adm.db"
+import json, sqlite3, sys, time, urllib.request, urllib.error, http.cookiejar, os, tempfile
+BASE = "http://127.0.0.1:3114"
+DB = os.environ.get("KOURT_DB_FILE") or (os.path.join(tempfile.gettempdir(), "adm.db") if sys.platform == "win32" else "/tmp/adm.db")
 AU, AP = "clerk", "clerk-test-pass-123"
 
 class C:

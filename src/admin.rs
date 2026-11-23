@@ -461,11 +461,26 @@ pub struct Reason {
     reason: String,
 }
 
+async fn notify_user_cases(st: &AppState, user_id: i64) {
+    if let Ok(cids) = sqlx::query_scalar::<_, String>(
+        "SELECT case_id FROM participants WHERE user_id = ?"
+    )
+    .bind(user_id)
+    .fetch_all(&st.db)
+    .await
+    {
+        for cid in cids {
+            st.hub.notify(&cid);
+        }
+    }
+}
+
 pub async fn ban_user(State(st): State<AppState>, a: AdminUser, Path(id): Path<i64>, Json(b): Json<Reason>) -> ApiResult<Json<Value>> {
     let name = user_name(&st.db, id).await?;
     let reason = line(&b.reason, 0, 200, "The reason")?;
     sqlx::query("UPDATE users SET banned = 1, ban_reason = ? WHERE id = ?").bind(&reason).bind(id).execute(&st.db).await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.db).await?;
+    notify_user_cases(&st, id).await;
     audit(&st.db, &a.username, "ban_user", &format!("user:{id} {name}"), &reason).await;
     Ok(Json(json!({ "ok": true })))
 }
@@ -483,6 +498,7 @@ pub async fn unban_user(State(st): State<AppState>, a: AdminUser, Path(id): Path
 pub async fn user_logout(State(st): State<AppState>, a: AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let name = user_name(&st.db, id).await?;
     let r = sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.db).await?;
+    notify_user_cases(&st, id).await;
     audit(&st.db, &a.username, "logout_user", &format!("user:{id} {name}"), &format!("{} sessions ended", r.rows_affected())).await;
     Ok(Json(json!({ "ok": true, "ended": r.rows_affected() })))
 }
@@ -497,6 +513,7 @@ pub async fn user_reset_password(State(st): State<AppState>, a: AdminUser, Path(
     let hash = hash_password(temp.clone()).await?;
     sqlx::query("UPDATE users SET pw_hash = ? WHERE id = ?").bind(hash).bind(id).execute(&st.db).await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&st.db).await?;
+    notify_user_cases(&st, id).await;
     audit(&st.db, &a.username, "reset_password", &format!("user:{id} {name}"), "temporary password issued").await;
     Ok(Json(json!({ "password": temp })))
 }
@@ -518,6 +535,7 @@ pub async fn user_rename(State(st): State<AppState>, a: AdminUser, Path(id): Pat
         Err(sqlx::Error::Database(e)) if e.is_unique_violation() => return Err(ApiError::conflict("That username is taken.")),
         Err(e) => return Err(e.into()),
     }
+    notify_user_cases(&st, id).await;
     audit(&st.db, &a.username, "rename_user", &format!("user:{id}"), &format!("{old} -> {new}")).await;
     Ok(Json(json!({ "ok": true })))
 }
@@ -548,6 +566,7 @@ pub async fn user_delete(State(st): State<AppState>, a: AdminUser, Path(id): Pat
     .await?;
     sqlx::query("DELETE FROM sessions WHERE user_id = ?").bind(id).execute(&mut *tx).await?;
     tx.commit().await?;
+    notify_user_cases(&st, id).await;
     audit(&st.db, &a.username, "delete_user", &format!("user:{id}"), &format!("was {name}")).await;
     Ok(Json(json!({ "ok": true })))
 }

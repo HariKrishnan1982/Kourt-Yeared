@@ -43,8 +43,8 @@ function toast(msg, bad) {
 async function copyText(text, btn) {
   try { await navigator.clipboard.writeText(text); }
   catch (_) {
-    const i = h("input", { value: text, "aria-hidden": "true" });
-    document.body.append(i); i.select(); document.execCommand("copy"); i.remove();
+    const i = h("input", { value: text, style: "position:fixed;top:-9999px;opacity:0", "aria-hidden": "true" });
+    document.body.append(i); i.select(); i.setSelectionRange(0, 99999); document.execCommand("copy"); i.remove();
   }
   const old = btn.textContent;
   btn.textContent = "Copied";
@@ -343,6 +343,11 @@ function caseView(id) {
     try { apply(await api("GET", "/cases/" + id)); }
     catch (ex) {
       if (ex.status === 401) return needLogin(location.pathname);
+      if (ex.status === 404) {
+        cleanup();
+        shell(h("section", { class: "sheet stack" }, h("h1", null, "Case not found"), h("p", null, "This case does not exist or was removed by the court."), h("a", { class: "btn", href: "/", "data-link": "" }, "Go home")));
+        return;
+      }
       if (!snap) shell(h("section", { class: "sheet stack" }, h("h1", null, "You're not on this case"), h("p", null, "Open the invite link you were sent to take your seat."), h("a", { class: "btn", href: "/", "data-link": "" }, "Go home")));
     }
   };
@@ -527,6 +532,7 @@ function caseView(id) {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     try { ws = new WebSocket(`${proto}://${location.host}/api/cases/${id}/ws`); } catch (_) { return; }
     ws.onopen = () => { wsUp = true; retry = 0; };
+    ws.onerror = () => { wsUp = false; };
     ws.onmessage = (e) => { try { apply(JSON.parse(e.data)); } catch (_) { /* ignore a bad frame */ } };
     ws.onclose = () => { wsUp = false; if (!stopped) setTimeout(connect, Math.min(8000, 700 * 2 ** retry++)); };
   }

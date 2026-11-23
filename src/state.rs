@@ -20,14 +20,19 @@ impl Hub {
             .subscribe()
     }
     pub fn notify(&self, case_id: &str) {
-        if let Some(s) = self.0.lock().unwrap().get(case_id) {
-            let _ = s.send(());
+        let mut m = self.0.lock().unwrap();
+        if let Some(s) = m.get(case_id) {
+            if s.receiver_count() > 0 {
+                let _ = s.send(());
+            } else {
+                m.remove(case_id);
+            }
         }
     }
 }
 
 #[derive(Clone, Default)]
-pub struct Limiter(Arc<Mutex<HashMap<String, (u32, i64)>>>);
+pub struct Limiter(Arc<Mutex<HashMap<String, (u32, i64, i64)>>>);
 
 impl Limiter {
     /// Records an attempt; returns false once `max` attempts land inside `window_ms`.
@@ -35,35 +40,35 @@ impl Limiter {
         let now = now_ms();
         let mut m = self.0.lock().unwrap();
         if m.len() > 10_000 {
-            m.retain(|_, (_, start)| now - *start < window_ms);
+            m.retain(|_, (_, start, win)| now - *start < *win);
         }
-        let e = m.entry(key.to_string()).or_insert((0, now));
-        if now - e.1 >= window_ms {
-            *e = (0, now);
+        let e = m.entry(key.to_string()).or_insert((0, now, window_ms));
+        if now - e.1 >= e.2 {
+            *e = (0, now, window_ms);
         }
         e.0 += 1;
         e.0 <= max
     }
-}
 
-impl Limiter {
     /// True when `key` already has `max` recorded failures inside the window.
     pub fn blocked(&self, key: &str, max: u32, window_ms: i64) -> bool {
         let now = now_ms();
         match self.0.lock().unwrap().get(key) {
-            Some((n, start)) if now - *start < window_ms => *n >= max,
+            Some((n, start, win)) if now - *start < window_ms.min(*win) => *n >= max,
             _ => false,
         }
     }
+
     pub fn record(&self, key: &str, window_ms: i64) {
         let now = now_ms();
         let mut m = self.0.lock().unwrap();
-        let e = m.entry(key.to_string()).or_insert((0, now));
-        if now - e.1 >= window_ms {
-            *e = (0, now);
+        let e = m.entry(key.to_string()).or_insert((0, now, window_ms));
+        if now - e.1 >= e.2 {
+            *e = (0, now, window_ms);
         }
         e.0 += 1;
     }
+
     pub fn clear(&self, key: &str) {
         self.0.lock().unwrap().remove(key);
     }

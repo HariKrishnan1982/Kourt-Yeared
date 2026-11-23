@@ -43,7 +43,7 @@ async fn require_marker(req: Request, next: Next) -> Response {
 
 async fn static_handler(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
-    if path.starts_with("api/") {
+    if path == "api" || path.starts_with("api/") {
         return (StatusCode::NOT_FOUND, "not found").into_response();
     }
     if !path.is_empty() && !path.contains("..") {

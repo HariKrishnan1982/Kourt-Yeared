@@ -1,5 +1,6 @@
-import json, sqlite3, time, urllib.request, urllib.error, http.cookiejar, sys
-BASE="http://127.0.0.1:3111"; DB="/tmp/e2e.db"
+import json, sqlite3, time, urllib.request, urllib.error, http.cookiejar, sys, os, tempfile
+BASE="http://127.0.0.1:3111"
+DB=os.environ.get("KOURT_DB_FILE") or (os.path.join(tempfile.gettempdir(), "e2e.db") if sys.platform == "win32" else "/tmp/e2e.db")
 class C:
     def __init__(s):
         s.cj=http.cookiejar.CookieJar(); s.op=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(s.cj))
